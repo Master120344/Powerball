@@ -2,6 +2,7 @@ import os
 import re
 import pandas as pd
 from tqdm import tqdm
+from PyPDF2 import PdfReader
 
 def _ints(s):
     return [int(x) for x in re.findall(r"\d+", s)]
@@ -100,25 +101,18 @@ class DataRepository:
         return pd.DataFrame(rows, columns=["date","ball1","ball2","ball3","ball4","ball5","powerball"])
 
     def _load_pdf(self, path, verbose=True):
-        from pdfminer.high_level import extract_pages
-        from pdfminer.layout import LTTextContainer, LTTextLine
         rows = []
-        pages = list(extract_pages(path))
-        for page in tqdm(pages, desc="Parsing PDF pages", disable=not verbose):
-            text_lines = []
-            for el in page:
-                if isinstance(el, LTTextContainer):
-                    for line in el:
-                        if isinstance(line, LTTextLine):
-                            s = line.get_text().strip()
-                            if s:
-                                text_lines.append(s)
-            for s in text_lines:
-                if not re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", s):
+        reader = PdfReader(path)
+        for page in tqdm(reader.pages, desc="Parsing PDF pages", disable=not verbose):
+            text = page.extract_text()
+            if not text:
+                continue
+            for line in text.splitlines():
+                if not re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", line):
                     continue
-                dmatch = re.search(r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", s)
+                dmatch = re.search(r"(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})", line)
                 d = dmatch.group(1)
-                rest = (s[:dmatch.start()]+" "+s[dmatch.end():]).replace(",", " ").replace("|", " ").replace("—"," ").replace("-"," ")
+                rest = (line[:dmatch.start()]+" "+line[dmatch.end():]).replace(",", " ").replace("|", " ").replace("—"," ").replace("-"," ")
                 nums = _ints(rest)
                 if len(nums) >= 6:
                     rows.append([d]+nums[:5]+[nums[5]])
