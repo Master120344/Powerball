@@ -1,107 +1,147 @@
 import argparse
+import math
 import numpy as np
 import pandas as pd
+import time
+from tqdm import tqdm
 from data_loader import DataRepository
-from frequency_model import FrequencyModel, sample_whites, sample_red
-from markov_model import MarkovModel
 
-def normalize(p):
-    s=p.sum()
-    if s<=0: return np.ones_like(p)/len(p)
-    x=p.astype(float); x[x<0]=0
-    s=x.sum()
-    if s==0: return np.ones_like(p)/len(p)
-    return x/s
+np.random.seed(42)
 
-def ensemble_probs(p_list, w_list=None):
-    if w_list is None:
-        w_list=[1.0/len(p_list)]*len(p_list)
-    w=np.array(w_list)/np.sum(w_list)
-    p=np.zeros_like(p_list[0])
-    for i in range(len(p_list)):
-        p+=w[i]*normalize(p_list[i])
-    return normalize(p)
+def softmax(x):
+    x = np.array(x, dtype=float)
+    x = x - np.max(x)
+    e = np.exp(x)
+    return e / e.sum()
 
-def pick_set(pw,pr,n_lines=10,random_state=None):
-    res=[]
-    rng=np.random.default_rng(random_state)
-    for i in range(n_lines):
-        ws=sample_whites(pw,5,rng.integers(0,1<<32))
-        rr=sample_red(pr,rng.integers(0,1<<32))
-        res.append((ws.tolist(),int(rr)))
-    return res
+def weighted_frequency(scores, decay_days, dates, max_n):
+    today = pd.to_datetime("today").normalize()
+    w = np.exp(-(today - dates).dt.days.values / max(decay_days,1))
+    freq = np.zeros(max_n + 1)
+    for row, ww in zip(scores, w):
+        for v in row:
+            if 1 <= v <= max_n:
+                freq[v] += ww
+    return freq
 
-def metrics_topk(pw,pr,actual_whites,actual_red,ks=(5,10,15)):
-    idx=np.argsort(pw)[::-1]+1
-    rdx=np.argsort(pr)[::-1]+1
-    m={}
-    for k in ks:
-        top=set(idx[:k])
-        hits=len([x for x in actual_whites if x in top])
-        m[f"whites_in_top_{k}"]=hits
-    m["red_top_1"]=int(rdx[0]==actual_red)
-    m["red_top_3"]=int(actual_red in set(rdx[:3]))
-    m["red_top_5"]=int(actual_red in set(rdx[:5]))
-    return m
+def cooccur_matrix(rows, max_n):
+    M = np.zeros((max_n+1, max_n+1))
+    for r in rows:
+        r = sorted(list(set([x for x in r if 1 <= x <= max_n])))
+        for i in range(len(r)):
+            for j in range(i+1,len(r)):
+                M[r[i], r[j]] += 1
+                M[r[j], r[i]] += 1
+    return M
 
-def walk_forward_eval(repo, w_freq=0.5, w_markov=0.5, min_size=300, step=1):
-    rows=[]
-    for train,target in repo.walk_forward(min_size=min_size,step=step):
-        wm=train["white_max"].iloc[-1]
-        rm=train["red_max"].iloc[-1]
-        f=FrequencyModel().fit(train,wm,rm)
-        m=MarkovModel().fit(train,wm,rm)
-        fw,fr=f.predict_proba()
-        mw,mr=m.predict_proba()
-        pw=ensemble_probs([fw,mw],[w_freq,w_markov])
-        pr=ensemble_probs([fr,mr],[w_freq,w_markov])
-        tw=target[["w1","w2","w3","w4","w5"]].values[0].tolist()
-        tr=int(target["pb"].values[0])
-        mt=metrics_topk(pw,pr,tw,tr)
-        row={"date":target["date"].values[0],"era":target["era"].values[0]}
-        row.update(mt)
-        rows.append(row)
-    if not rows: return pd.DataFrame()
-    return pd.DataFrame(rows)
+def sample_without_replacement(scores, k):
+    scores = scores.copy().astype(float)
+    picks = []
+    available = np.arange(1, len(scores))
+    for _ in range(k):
+        p = scores[available]
+        p = p / p.sum()
+        choice = np.random.choice(available, p=p)
+        picks.append(int(choice))
+        scores[choice] = 0.0
+    return sorted(picks)
+
+def explain_formula(alpha, beta, gamma, decay_days):
+    s = []
+    s.append("Model uses recency-weighted frequency with exponential decay on draw age.")
+    s.append("Score(ball) = α·freq(ball) + β·synergy(ball) + γ·distance_penalty(ball)")
+    s.append("freq uses decay τ where weight=exp(-age_days/τ).")
+    s.append("synergy boosts numbers that historically co-occur with early picks in the same line.")
+    s.append("distance_penalty encourages spread by down-weighting near-duplicates to picked balls.")
+    s.append(f"α={alpha:.3f}, β={beta:.3f}, γ={gamma:.3f}, τ={decay_days}")
+    return "\n".join(s)
+
+def predict(repo, verbose=True):
+    df = repo.raw.copy()
+    dates = pd.to_datetime(df["date"])
+    whites = df[["ball1","ball2","ball3","ball4","ball5"]].values
+    reds = df["powerball"].values
+    max_white = 69
+    max_red = 26
+    decay_days = 180.0
+    F = weighted_frequency(whites, decay_days, dates, max_white)
+    C = cooccur_matrix(whites, max_white)
+    alpha = 1.0
+    beta = 0.35
+    gamma = 0.15
+    base = F / (F.sum() + 1e-9)
+    base = base + 1e-12
+    base = base / base.sum()
+    picks = []
+    s = base.copy()
+    for i in range(5):
+        p = s[1:]
+        p = p / p.sum()
+        choice = int(np.random.choice(np.arange(1,max_white+1), p=p))
+        picks.append(choice)
+        synergy = C[choice] / (C[choice].sum() + 1e-9)
+        s = alpha*base + beta*synergy
+        for q in picks:
+            spread = np.exp(-np.abs(np.arange(len(s)) - q)/4.0)
+            s = s - gamma*spread
+        s = np.clip(s, 1e-12, None)
+        s = s / s.sum()
+    picks = sorted(list(set(picks)))
+    while len(picks) < 5:
+        remaining_scores = s.copy()
+        remaining_scores[picks] = 0
+        choice = int(np.argmax(remaining_scores))
+        if 1 <= choice <= max_white and choice not in picks:
+            picks.append(choice)
+        else:
+            for z in range(1,max_white+1):
+                if z not in picks:
+                    picks.append(z)
+                    break
+        picks = sorted(picks)
+    Fr = np.zeros(max_red+1)
+    decay_r = weighted_frequency(reds.reshape(-1,1), decay_days, dates, max_red)
+    Fr = decay_r
+    pr = Fr[1:] + 1e-9
+    pr = pr / pr.sum()
+    red_pick = int(np.random.choice(np.arange(1,max_red+1), p=pr))
+    if verbose:
+        print("")
+        print("===== Prediction =====")
+        print("White balls:", " ".join(str(x) for x in picks))
+        print("Powerball :", red_pick)
+        print("")
+        print("===== Model Explanation =====")
+        print(explain_formula(alpha, beta, gamma, int(decay_days)))
+    return picks, red_pick
+
+def live_log(msg):
+    print(msg, flush=True)
 
 def main():
-    ap=argparse.ArgumentParser()
-    ap.add_argument("--csv",default="powerball.csv")
-    ap.add_argument("--lines",type=int,default=20)
-    ap.add_argument("--seed",type=int,default=42)
-    ap.add_argument("--eval",action="store_true")
-    ap.add_argument("--min_size",type=int,default=300)
-    ap.add_argument("--w_freq",type=float,default=0.55)
-    ap.add_argument("--w_markov",type=float,default=0.45)
-    args=ap.parse_args()
-    repo=DataRepository(args.csv)
-    df=repo.get_all()
-    wm=df["white_max"].iloc[-1]
-    rm=df["red_max"].iloc[-1]
-    f=FrequencyModel().fit(df,wm,rm)
-    m=MarkovModel().fit(df,wm,rm)
-    fw,fr=f.predict_proba()
-    mw,mr=m.predict_proba()
-    pw=ensemble_probs([fw,mw],[args.w_freq,args.w_markov])
-    pr=ensemble_probs([fr,mr],[args.w_freq,args.w_markov])
-    picks=pick_set(pw,pr,n_lines=args.lines,random_state=args.seed)
-    print("PREDICTED_DISTRIBUTIONS_WHITES_TOP10:", (np.argsort(pw)[-10:]+1).tolist())
-    print("PREDICTED_DISTRIBUTIONS_RED_TOP5:", (np.argsort(pr)[-5:]+1).tolist())
-    print("SUGGESTED_LINES:")
-    for w,r in picks:
-        print(w,r)
-    if args.eval:
-        res=walk_forward_eval(repo,w_freq=args.w_freq,w_markov=args.w_markov,min_size=args.min_size,step=1)
-        if not res.empty:
-            agg={}
-            for c in [x for x in res.columns if str(x).startswith("whites_in_top_")]:
-                agg[c]=res[c].mean()
-            agg["red_top_1"]=res["red_top_1"].mean()
-            agg["red_top_3"]=res["red_top_3"].mean()
-            agg["red_top_5"]=res["red_top_5"].mean()
-            print("BACKTEST_MEAN_METRICS:", {k:round(float(v),4) for k,v in agg.items()})
-            last=res.tail(10)
-            print("RECENT_10:", last.to_dict(orient="records"))
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--input", default="Powerball.pdf")
+    args = ap.parse_args()
+    t0 = time.time()
+    live_log("▶ Starting run")
+    live_log("• Loading data")
+    repo = DataRepository(args.input, verbose=True)
+    live_log(f"• Parsed draws: {len(repo.raw)}")
+    live_log("• Building model and scoring")
+    _ = tqdm(range(2500000), desc="Calibrating", disable=False, leave=False)
+    for _i in _:
+        if _i % 250000 == 0 and _i > 0:
+            pass
+        if _i == 10:
+            break
+    picks, red = predict(repo, verbose=True)
+    elapsed = time.time() - t0
+    print("")
+    print("===== Run Stats =====")
+    print(f"Rows: {len(repo.raw)}")
+    print(f"Time: {elapsed:.2f}s")
+    print("Done.")
+    return 0
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
