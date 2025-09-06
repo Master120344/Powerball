@@ -29,10 +29,11 @@ class DataRepository:
                 continue
             for line in text.splitlines():
                 line = line.strip()
-                dmatch = re.match(r"^(\d{2}/\d{2}/\d{4})", line)
+                # Super flexible date matcher: 09/03/2025 or 09-03-2025 or 09 03 2025
+                dmatch = re.match(r"^(\d{1,2}\s*[/\- ]\s*\d{1,2}\s*[/\- ]\s*\d{4})", line)
                 if not dmatch:
                     continue
-                date = dmatch.group(1)
+                date = re.sub(r"\s+", "", dmatch.group(1).replace(" ", "").replace("-", "/"))
                 rest = line[dmatch.end():]
                 nums = _ints(rest)
                 if len(nums) >= 6:
@@ -46,10 +47,10 @@ class DataRepository:
         with open(path, "r", encoding="utf-8") as f:
             for line in tqdm(f, desc="Parsing TXT lines", disable=not verbose):
                 line = line.strip()
-                dmatch = re.match(r"^(\d{2}/\d{2}/\d{4})", line)
+                dmatch = re.match(r"^(\d{1,2}\s*[/\- ]\s*\d{1,2}\s*[/\- ]\s*\d{4})", line)
                 if not dmatch:
                     continue
-                date = dmatch.group(1)
+                date = re.sub(r"\s+", "", dmatch.group(1).replace(" ", "").replace("-", "/"))
                 rest = line[dmatch.end():]
                 nums = _ints(rest)
                 if len(nums) >= 6:
