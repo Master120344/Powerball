@@ -6,6 +6,25 @@ from tqdm import tqdm
 def _ints(s):
     return [int(x) for x in re.findall(r"\d+", s)]
 
+def _parse_whites_recursive(s, count, min_val):
+    if count == 0:
+        return [] if s == "" else None
+    if not s or count < 0:
+        return None
+    if len(s) >= 1:
+        num = int(s[0])
+        if num > min_val and 1 <= num <= 69:
+            result = _parse_whites_recursive(s[1:], count - 1, num)
+            if result is not None:
+                return [num] + result
+    if len(s) >= 2:
+        num = int(s[:2])
+        if num > min_val and 1 <= num <= 69:
+            result = _parse_whites_recursive(s[2:], count - 1, num)
+            if result is not None:
+                return [num] + result
+    return None
+
 class DataRepository:
     def __init__(self, path, verbose=True):
         self.path = path
@@ -27,24 +46,44 @@ class DataRepository:
             text = page.extract_text()
             if not text:
                 continue
-            # DEBUG: print first few lines of each page
             if verbose and page_index == 0:
                 print("\n--- DEBUG PREVIEW (first 10 lines from PDF) ---")
                 for preview_line in text.splitlines()[:10]:
                     print("DEBUG:", preview_line)
                 print("--- END DEBUG PREVIEW ---\n")
-
             for line in text.splitlines():
                 line = line.strip()
-                # Flexible date matcher: 09/03/2025 or 09-03-2025 or 09 03 2025
                 dmatch = re.match(r"^(\d{1,2}\s*[/\- ]\s*\d{1,2}\s*[/\- ]\s*\d{4})", line)
                 if not dmatch:
                     continue
                 date = re.sub(r"\s+", "", dmatch.group(1).replace(" ", "").replace("-", "/"))
-                rest = line[dmatch.end():]
-                nums = _ints(rest)
-                if len(nums) >= 6:
-                    rows.append([date] + nums[:5] + [nums[5]])
+                rest = line[dmatch.end():].strip()
+                parts = rest.split()
+                if not parts:
+                    continue
+                num_blob = "".join(re.findall(r"\d+", parts[0]))
+                parsed_successfully = False
+                if len(num_blob) > 7:
+                    try:
+                        pb = int(num_blob[-2:])
+                        whites_blob = num_blob[:-2]
+                        if 1 <= pb <= 26:
+                            whites = _parse_whites_recursive(whites_blob, 5, 0)
+                            if whites and len(whites) == 5:
+                                rows.append([date] + whites + [pb])
+                                parsed_successfully = True
+                    except (ValueError, IndexError):
+                        pass
+                if not parsed_successfully and len(num_blob) > 5:
+                    try:
+                        pb = int(num_blob[-1])
+                        whites_blob = num_blob[:-1]
+                        if 1 <= pb <= 26:
+                            whites = _parse_whites_recursive(whites_blob, 5, 0)
+                            if whites and len(whites) == 5:
+                                rows.append([date] + whites + [pb])
+                    except (ValueError, IndexError):
+                        pass
         df = pd.DataFrame(rows, columns=["date","ball1","ball2","ball3","ball4","ball5","powerball"])
         print(f"✅ Parsed {len(df)} draws from {path}")
         return df
@@ -58,10 +97,38 @@ class DataRepository:
                 if not dmatch:
                     continue
                 date = re.sub(r"\s+", "", dmatch.group(1).replace(" ", "").replace("-", "/"))
-                rest = line[dmatch.end():]
+                rest = line[dmatch.end():].strip()
                 nums = _ints(rest)
                 if len(nums) >= 6:
                     rows.append([date] + nums[:5] + [nums[5]])
+                    continue
+                else:
+                    parts = rest.split()
+                    if not parts:
+                        continue
+                    num_blob = "".join(re.findall(r"\d+", parts[0]))
+                    parsed_successfully = False
+                    if len(num_blob) > 7:
+                        try:
+                            pb = int(num_blob[-2:])
+                            whites_blob = num_blob[:-2]
+                            if 1 <= pb <= 26:
+                                whites = _parse_whites_recursive(whites_blob, 5, 0)
+                                if whites and len(whites) == 5:
+                                    rows.append([date] + whites + [pb])
+                                    parsed_successfully = True
+                        except (ValueError, IndexError):
+                            pass
+                    if not parsed_successfully and len(num_blob) > 5:
+                        try:
+                            pb = int(num_blob[-1])
+                            whites_blob = num_blob[:-1]
+                            if 1 <= pb <= 26:
+                                whites = _parse_whites_recursive(whites_blob, 5, 0)
+                                if whites and len(whites) == 5:
+                                    rows.append([date] + whites + [pb])
+                        except (ValueError, IndexError):
+                            pass
         df = pd.DataFrame(rows, columns=["date","ball1","ball2","ball3","ball4","ball5","powerball"])
         print(f"✅ Parsed {len(df)} draws from {path}")
         return df
