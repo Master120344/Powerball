@@ -23,13 +23,20 @@ class DataRepository:
     def _load_pdf(self, path, verbose=True):
         rows = []
         reader = PdfReader(path)
-        for page in tqdm(reader.pages, desc="Parsing PDF pages", disable=not verbose):
+        for page_index, page in enumerate(tqdm(reader.pages, desc="Parsing PDF pages", disable=not verbose)):
             text = page.extract_text()
             if not text:
                 continue
+            # DEBUG: print first few lines of each page
+            if verbose and page_index == 0:
+                print("\n--- DEBUG PREVIEW (first 10 lines from PDF) ---")
+                for preview_line in text.splitlines()[:10]:
+                    print("DEBUG:", preview_line)
+                print("--- END DEBUG PREVIEW ---\n")
+
             for line in text.splitlines():
                 line = line.strip()
-                # Super flexible date matcher: 09/03/2025 or 09-03-2025 or 09 03 2025
+                # Flexible date matcher: 09/03/2025 or 09-03-2025 or 09 03 2025
                 dmatch = re.match(r"^(\d{1,2}\s*[/\- ]\s*\d{1,2}\s*[/\- ]\s*\d{4})", line)
                 if not dmatch:
                     continue
