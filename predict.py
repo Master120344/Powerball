@@ -120,7 +120,8 @@ def live_log(msg):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input", default="Powerball.pdf")
+    ap.add_argument("--input", default="Powerball.PDF")
+    ap.add_argument("--num-predictions", type=int, default=5, help="Number of predictions to generate")
     args = ap.parse_args()
     t0 = time.time()
     live_log("▶ Starting run")
@@ -134,7 +135,27 @@ def main():
             pass
         if _i == 10:
             break
-    picks, red = predict(repo, verbose=True)
+    
+    predictions = []
+    live_log(f"• Generating {args.num_predictions} predictions")
+    for _ in range(args.num_predictions):
+        picks, red = predict(repo, verbose=False)
+        predictions.append((picks, red))
+
+    print("")
+    print(f"===== Top {args.num_predictions} Predictions =====")
+    for i, (picks, red) in enumerate(predictions, 1):
+        white_balls_str = " ".join(f"{n:02}" for n in picks)
+        print(f"Prediction {i}:  White: {white_balls_str}   Powerball: {red:02}")
+    
+    print("")
+    print("===== Model Explanation =====")
+    alpha = 1.0
+    beta = 0.35
+    gamma = 0.15
+    decay_days = 180
+    print(explain_formula(alpha, beta, gamma, int(decay_days)))
+
     elapsed = time.time() - t0
     print("")
     print("===== Run Stats =====")
